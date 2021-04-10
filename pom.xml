@@ -53,7 +53,11 @@
       <artifactId>h2</artifactId>
       <version>1.4.200</version>
     </dependency>
-
+    <dependency>
+      <groupId>com.sparkjava</groupId>
+      <artifactId>spark-template-velocity</artifactId>
+      <version>2.7.1</version>
+    </dependency>
   </dependencies>
 
   <build>

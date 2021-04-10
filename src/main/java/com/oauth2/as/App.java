@@ -1,18 +1,25 @@
 package com.oauth2.as;
 
 import com.oauth2.as.filter.ClientAuthenticationFilter;
+import com.oauth2.as.filter.PRAuthenticationFilter;
 import com.oauth2.as.filter.UserAuthenticationFilter;
 import com.oauth2.as.service.ClientService;
+import com.oauth2.as.service.PRService;
 import com.oauth2.as.service.UserService;
 import com.oauth2.as.util.CryptoUtils;
+import org.apache.velocity.app.VelocityEngine;
 import org.h2.jdbcx.JdbcConnectionPool;
 import org.json.JSONObject;
+import spark.ModelAndView;
 import spark.QueryParamsMap;
+import spark.template.velocity.VelocityTemplateEngine;
 
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Time;
 import java.sql.Timestamp;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
 
 import static java.time.Instant.now;
 import static java.time.temporal.ChronoUnit.SECONDS;
@@ -20,17 +27,31 @@ import static spark.Spark.*;
 
 public class App {
 
+    public static String render(VelocityTemplateEngine velocityTemplateEngine, String view, Map<String, Object> model) {
+        return velocityTemplateEngine.render(new ModelAndView(model, view));
+    }
+
     public static void main(String[] args) throws SQLException {
 
         staticFileLocation("/public");
+
+        Properties properties = new Properties();
+
+        properties.setProperty("file.resource.loader.path", "src/main/resources/public");
+
+        VelocityTemplateEngine templateEngine = new VelocityTemplateEngine(new VelocityEngine(properties));
 
         var jdbcConnectionPool = JdbcConnectionPool.create("jdbc:h2:~/test", "sa", "sa");
 
         var connection = jdbcConnectionPool.getConnection();
 
-        var codeTableQuery = "CREATE TABLE IF NOT EXISTS CODE (id int, content varchar(255), expiry TIMESTAMP)";
+        connection.createStatement().execute("DROP TABLE code");
 
-        var tokenTableQuery = "CREATE TABLE IF NOT EXISTS TOKEN (id int, content varchar(255), expiry TIMESTAMP)";
+        connection.createStatement().execute("DROP TABLE token");
+
+        var codeTableQuery = "CREATE TABLE IF NOT EXISTS code (id int IDENTITY(1,1) PRIMARY KEY, content VARCHAR(255), expiry TIMESTAMP, scope VARCHAR(255))";
+
+        var tokenTableQuery = "CREATE TABLE IF NOT EXISTS token (id int IDENTITY(1,1) PRIMARY KEY, content VARCHAR (255), expiry TIMESTAMP, scope VARCHAR(255))";
 
         connection.createStatement().execute(codeTableQuery);
 
@@ -46,7 +67,9 @@ public class App {
 
         var clientAuthenticationFilter = new ClientAuthenticationFilter(clientService);
 
+        var prService = new PRService();
 
+        var prAuthenticationFilter = new PRAuthenticationFilter(prService);
                 /*
         /authorize endpoint
          */
@@ -61,12 +84,14 @@ public class App {
                 var queryMap = request.queryMap();
 
                 if (!queryMap.hasKeys()) {
-                    response.redirect("approve.html");
+                    response.redirect("authorize.html");
                     return null;
                 }
 
                 if (!queryMap.hasKey("state")) {
-                    response.redirect("error.html?invalid=state");
+                    var model = new HashMap<String, Object>();
+                    model.put("error", "state");
+                    return render(templateEngine, "error.html", model);
                 }
 
                 var actualClientId = Long.parseLong(request.queryParams("client_id"));
@@ -74,7 +99,9 @@ public class App {
                 var realClientId = client.getId();
 
                 if (!realClientId.equals(actualClientId)) {
-                    response.redirect("error.html?invalid=client_id");
+                    var model = new HashMap<String, Object>();
+                    model.put("error", "client_id");
+                    return render(templateEngine, "error.html", model);
                 }
 
                 var actualRedirectUri = request.queryParams("redirect_uri");
@@ -82,26 +109,34 @@ public class App {
                 var realRedirectUri = client.getRedirectUri();
 
                 if (!realRedirectUri.equals(actualRedirectUri)) {
-                    response.redirect("error.html?invalid=redirect_uri");
+                    var model = new HashMap<String, Object>();
+                    model.put("error", "redirect_uri");
+                    return render(templateEngine, "error.html", model);
                 }
 
-                var actualScope = request.queryParams("scope");
+                var actualScope = request.queryParams("scope").split(" ");
 
-                var realScope = client.getScope();
+                var realScope = client.getScope().split(" ");
 
-                if (!realScope.equals(actualScope)) {
-                    response.redirect("error.html?invalid=scope");
+                if (!Arrays.asList(realScope).containsAll(Arrays.asList(actualScope))) {
+                    var model = new HashMap<String, Object>();
+                    model.put("error", "scope");
+                    return render(templateEngine, "error.html", model);
                 }
 
             } catch (NumberFormatException e) {
-                response.redirect("error.html?invalid=format");
+                var model = new HashMap<String, Object>();
+                model.put("error", "format");
+                return render(templateEngine, "error.html", model);
             }
 
             request.session().attribute("query_map", request.queryMap());
 
-            response.redirect("approve.html?" + request.queryString());
+            var model = new HashMap<String, Object>();
 
-            return null;
+            model.put("scope", request.queryMap().value("scope").split(" "));
+            model.put("client", client.getName());
+            return render(templateEngine, "authorize.html", model);
         });
 
         /*
@@ -109,7 +144,6 @@ public class App {
          */
 
         before("/approve", userAuthenticationFilter);
-
         post("/approve", (request, response) -> {
 
             var session = request.session();
@@ -122,13 +156,15 @@ public class App {
 
             var expiry = now().plus(10, SECONDS);
 
-            var preparedStatement = connection.prepareStatement("INSERT INTO CODE (content, expiry) VALUES (? , ?)");
+            var preparedInsertStatement = connection.prepareStatement("INSERT INTO code (content, expiry, scope) VALUES (?, ?, ?)");
 
-            preparedStatement.setString(1, hashedCode);
+            preparedInsertStatement.setString(1, hashedCode);
 
-            preparedStatement.setTimestamp(2, Timestamp.from(expiry));
+            preparedInsertStatement.setTimestamp(2, Timestamp.from(expiry));
 
-            preparedStatement.execute();
+            preparedInsertStatement.setString(3, queryMap.value("scope"));
+
+            preparedInsertStatement.execute();
 
             var state = queryMap.value("state");
 
@@ -156,17 +192,21 @@ public class App {
 
             var hashedCode = cryptoUtils.sha256(code);
 
-            var preparedStatement = connection.prepareStatement("SELECT * FROM CODE WHERE content = ?");
+            var preparedStatement = connection.prepareStatement("SELECT * FROM code WHERE content = ?");
 
             preparedStatement.setString(1, hashedCode);
 
             var result = preparedStatement.executeQuery();
 
+            var scope = "";
+
             if (result.next()) {
 
                 var expiry = result.getTimestamp("expiry").toInstant();
 
-                var preparedDeleteStatement = connection.prepareStatement("DELETE FROM CODE WHERE content = ?");
+                scope = result.getString("scope");
+
+                var preparedDeleteStatement = connection.prepareStatement("DELETE FROM code WHERE content = ?");
 
                 preparedDeleteStatement.setString(1, hashedCode);
 
@@ -185,11 +225,13 @@ public class App {
 
             var hashedToken = cryptoUtils.sha256(accessToken);
 
-            var prepareInsertStatement = connection.prepareStatement("INSERT INTO TOKEN (content, expiry) VALUES (? , ?)");
+            var prepareInsertStatement = connection.prepareStatement("INSERT INTO token (content, expiry, scope) VALUES (? , ?, ?)");
 
             prepareInsertStatement.setString(1, hashedToken);
 
             prepareInsertStatement.setTimestamp(2, Timestamp.from(expiry));
+
+            prepareInsertStatement.setString(3, scope);
 
             prepareInsertStatement.execute();
 
@@ -197,11 +239,13 @@ public class App {
 
             tokenResponse.put("token", accessToken);
 
+            tokenResponse.put("expiry", expiry);
+
             return tokenResponse;
         });
 
-
-        post("/introspection", (request, response) -> {
+        before("/introspect", prAuthenticationFilter);
+        post("/introspect", (request, response) -> {
             var requestBody = new JSONObject(request.body());
 
             if (!requestBody.has("token")) {
@@ -217,7 +261,7 @@ public class App {
 
             var hashedToken = cryptoUtils.sha256(actualToken);
 
-            var preparedStatement = connection.prepareStatement("SELECT * FROM TOKEN WHERE content = ?");
+            var preparedStatement = connection.prepareStatement("SELECT * FROM token WHERE content = ?");
 
             preparedStatement.setString(1, hashedToken);
 
@@ -226,12 +270,16 @@ public class App {
             if (result.next()) {
 
                 var expiry = result.getTimestamp("expiry").toInstant();
+                var scope = result.getString("scope");
 
                 if (now().isAfter(expiry)) {
-                    connection.createStatement().execute("DELETE FROM TOKEN WHERE content = " + "\'" + hashedToken + "\'");
+                    var preparedDeleteStatement = connection.prepareStatement("DELETE FROM token WHERE content = ?");
+                    preparedDeleteStatement.setString(1, hashedToken);
+                    preparedDeleteStatement.execute();
                 } else {
                     responseObject.put("expiry", expiry);
                     responseObject.put("active", true);
+                    responseObject.put("scope", scope);
                 }
             }
 

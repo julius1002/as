@@ -33,7 +33,7 @@ public class UserAuthenticationFilter extends AuthenticationFilter {
 
         var user = userService.findUser();
 
-        if (!user.getUsername().equals(splitCredentials[0]) || !user.getPassword().equals(splitCredentials[1])) {
+        if (!user.getUsername().equals(splitCredentials[0]) || !user.getSecret().equals(splitCredentials[1])) {
             halt(401);
             return;
         }

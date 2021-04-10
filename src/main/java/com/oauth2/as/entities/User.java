@@ -3,12 +3,12 @@ package com.oauth2.as.entities;
 public class User {
     private Long id;
     private String username;
-    private String password;
+    private String secret;
 
-    public User(Long id, String username, String password) {
+    public User(Long id, String username, String secret) {
         this.id = id;
         this.username = username;
-        this.password = password;
+        this.secret = secret;
     }
 
     public Long getId() {
@@ -27,11 +27,11 @@ public class User {
         this.username = username;
     }
 
-    public String getPassword() {
-        return password;
+    public String getSecret() {
+        return secret;
     }
 
-    public void setPassword(String password) {
-        this.password = password;
+    public void setSecret(String secret) {
+        this.secret = secret;
     }
 }
