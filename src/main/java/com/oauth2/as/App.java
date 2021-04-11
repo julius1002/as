@@ -1,5 +1,6 @@
 package com.oauth2.as;
 
+import com.oauth2.as.entities.User;
 import com.oauth2.as.filter.ClientAuthenticationFilter;
 import com.oauth2.as.filter.PRAuthenticationFilter;
 import com.oauth2.as.filter.UserAuthenticationFilter;
@@ -14,6 +15,9 @@ import spark.ModelAndView;
 import spark.QueryParamsMap;
 import spark.template.velocity.VelocityTemplateEngine;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.Arrays;
@@ -27,39 +31,21 @@ import static spark.Spark.*;
 
 public class App {
 
-    public static String render(VelocityTemplateEngine velocityTemplateEngine, String view, Map<String, Object> model) {
-        return velocityTemplateEngine.render(new ModelAndView(model, view));
-    }
-
-    public static void main(String[] args) throws SQLException {
+    public static void main(String[] args) throws SQLException, IOException {
 
         staticFileLocation("/public");
 
-        Properties properties = new Properties();
-
-        properties.setProperty("file.resource.loader.path", "src/main/resources/public");
-
-        VelocityTemplateEngine templateEngine = new VelocityTemplateEngine(new VelocityEngine(properties));
+        var templateEngine = initTemplateEngine("src/main/resources/public");
 
         var jdbcConnectionPool = JdbcConnectionPool.create("jdbc:h2:~/test", "sa", "sa");
 
         var connection = jdbcConnectionPool.getConnection();
 
-        connection.createStatement().execute("DROP TABLE code");
-
-        connection.createStatement().execute("DROP TABLE token");
-
-        var codeTableQuery = "CREATE TABLE IF NOT EXISTS code (id int IDENTITY(1,1) PRIMARY KEY, content VARCHAR(255), expiry TIMESTAMP, scope VARCHAR(255))";
-
-        var tokenTableQuery = "CREATE TABLE IF NOT EXISTS token (id int IDENTITY(1,1) PRIMARY KEY, content VARCHAR (255), expiry TIMESTAMP, scope VARCHAR(255))";
-
-        connection.createStatement().execute(codeTableQuery);
-
-        connection.createStatement().execute(tokenTableQuery);
+        initDatabase(connection, "src/main/resources/init.sql");
 
         var cryptoUtils = new CryptoUtils();
 
-        var userService = new UserService();
+        var userService = new UserService(connection);
 
         var userAuthenticationFilter = new UserAuthenticationFilter(userService);
 
@@ -156,14 +142,13 @@ public class App {
 
             var expiry = now().plus(10, SECONDS);
 
-            var preparedInsertStatement = connection.prepareStatement("INSERT INTO code (content, expiry, scope) VALUES (?, ?, ?)");
+            var user = (User) session.attribute("user");
 
+            var preparedInsertStatement = connection.prepareStatement("INSERT INTO code (content, expiry, scope, user_id) VALUES (?, ?, ?, ?)");
             preparedInsertStatement.setString(1, hashedCode);
-
             preparedInsertStatement.setTimestamp(2, Timestamp.from(expiry));
-
             preparedInsertStatement.setString(3, queryMap.value("scope"));
-
+            preparedInsertStatement.setLong(4, user.getId());
             preparedInsertStatement.execute();
 
             var state = queryMap.value("state");
@@ -185,7 +170,6 @@ public class App {
 
         before("/token", clientAuthenticationFilter);
         post("/token", (request, response) -> {
-
             var requestBody = new JSONObject(request.body());
 
             var code = (String) requestBody.get("code");
@@ -193,18 +177,20 @@ public class App {
             var hashedCode = cryptoUtils.sha256(code);
 
             var preparedStatement = connection.prepareStatement("SELECT * FROM code WHERE content = ?");
-
             preparedStatement.setString(1, hashedCode);
-
             var result = preparedStatement.executeQuery();
 
             var scope = "";
+
+            var userId = -1L;
 
             if (result.next()) {
 
                 var expiry = result.getTimestamp("expiry").toInstant();
 
                 scope = result.getString("scope");
+
+                userId = result.getLong("user_id");
 
                 var preparedDeleteStatement = connection.prepareStatement("DELETE FROM code WHERE content = ?");
 
@@ -225,13 +211,15 @@ public class App {
 
             var hashedToken = cryptoUtils.sha256(accessToken);
 
-            var prepareInsertStatement = connection.prepareStatement("INSERT INTO token (content, expiry, scope) VALUES (? , ?, ?)");
+            var prepareInsertStatement = connection.prepareStatement("INSERT INTO token (content, expiry, scope, user_id) VALUES (?, ?, ?, ?)");
 
             prepareInsertStatement.setString(1, hashedToken);
 
             prepareInsertStatement.setTimestamp(2, Timestamp.from(expiry));
 
             prepareInsertStatement.setString(3, scope);
+
+            prepareInsertStatement.setLong(4, userId);
 
             prepareInsertStatement.execute();
 
@@ -244,7 +232,7 @@ public class App {
             return tokenResponse;
         });
 
-        before("/introspect", prAuthenticationFilter);
+        //before("/introspect", prAuthenticationFilter);
         post("/introspect", (request, response) -> {
             var requestBody = new JSONObject(request.body());
 
@@ -253,40 +241,63 @@ public class App {
                 return null;
             }
 
-            var responseObject = new JSONObject();
+            var introspectionResponse = new JSONObject();
 
-            responseObject.put("active", false);
+            introspectionResponse.put("active", false);
 
             var actualToken = (String) requestBody.get("token");
 
             var hashedToken = cryptoUtils.sha256(actualToken);
 
             var preparedStatement = connection.prepareStatement("SELECT * FROM token WHERE content = ?");
-
             preparedStatement.setString(1, hashedToken);
-
             var result = preparedStatement.executeQuery();
 
             if (result.next()) {
 
                 var expiry = result.getTimestamp("expiry").toInstant();
+
                 var scope = result.getString("scope");
+
+                var sub = result.getLong("user_id");
 
                 if (now().isAfter(expiry)) {
                     var preparedDeleteStatement = connection.prepareStatement("DELETE FROM token WHERE content = ?");
                     preparedDeleteStatement.setString(1, hashedToken);
                     preparedDeleteStatement.execute();
                 } else {
-                    responseObject.put("expiry", expiry);
-                    responseObject.put("active", true);
-                    responseObject.put("scope", scope);
+                    introspectionResponse.put("expiry", expiry);
+                    introspectionResponse.put("active", true);
+                    introspectionResponse.put("sub", sub);
+                    introspectionResponse.put("scope", scope);
                 }
             }
-
             response.status(200);
-
-            return responseObject;
-
+            return introspectionResponse;
         });
+    }
+
+    private static VelocityTemplateEngine initTemplateEngine(String path) {
+        Properties properties = new Properties();
+
+        properties.setProperty("file.resource.loader.path", path);
+
+        VelocityTemplateEngine templateEngine = new VelocityTemplateEngine(new VelocityEngine(properties));
+        return templateEngine;
+    }
+
+    public static String render(VelocityTemplateEngine velocityTemplateEngine, String view, Map<String, Object> model) {
+        return velocityTemplateEngine.render(new ModelAndView(model, view));
+    }
+
+    private static void initDatabase(java.sql.Connection connection, String fileName) throws IOException, SQLException {
+        var reader = new BufferedReader(new FileReader(fileName));
+
+        var stringBuilder = new StringBuilder();
+
+        while (reader.ready()) {
+            stringBuilder.append(reader.readLine());
+        }
+        connection.createStatement().execute(stringBuilder.toString());
     }
 }

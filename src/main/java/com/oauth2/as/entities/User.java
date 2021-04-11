@@ -11,6 +11,9 @@ public class User {
         this.secret = secret;
     }
 
+    public User() {
+    }
+
     public Long getId() {
         return id;
     }

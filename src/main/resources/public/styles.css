@@ -28,3 +28,9 @@ input {
     display: block;
     margin: 1em auto;
 }
+
+.unauthorized {
+    border:red 2px solid
+}
+
+button:focus {outline:0;}

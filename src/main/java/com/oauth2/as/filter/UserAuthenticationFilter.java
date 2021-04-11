@@ -31,7 +31,13 @@ public class UserAuthenticationFilter extends AuthenticationFilter {
             halt(401);
         }
 
-        var user = userService.findUser();
+        var userOptional = userService.findByUsername("alice");
+
+        if (userOptional.isEmpty()) {
+            halt(401);
+        }
+
+        var user = userOptional.get();
 
         if (!user.getUsername().equals(splitCredentials[0]) || !user.getSecret().equals(splitCredentials[1])) {
             halt(401);

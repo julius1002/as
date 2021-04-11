@@ -10,15 +10,21 @@ window.onload = function () {
 
         var authorizationValue = btoa(username + ":" + password)
 
-        var metaData = {
+        var content = {
             method: 'POST',
             headers: {
                 'Authorization': 'Basic ' + authorizationValue
             }
         }
 
-        fetch("/approve", metaData).then(res =>
-            res.json()
+        fetch("/approve", content).then(res =>{
+
+if(res.status===401){
+approveBtn.classList.add("unauthorized")
+
+}
+            return res.json()
+            }
         ).then(res => {
             window.location.href = res.redirect_uri;
         })

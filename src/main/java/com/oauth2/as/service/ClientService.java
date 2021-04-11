@@ -6,8 +6,8 @@ public class ClientService {
     public Client getClient() {
             return new Client(1L,
                 "default_client",
-                "http://localhost:8080",
-                "http://localhost:8080/redirect",
+                "http://localhost:3000",
+                "http://localhost:3000/redirect",
                 "authorization_code",
                 "code",
                 "secret_basic",
