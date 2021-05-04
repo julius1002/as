@@ -9,9 +9,11 @@ import com.oauth2.as.service.ClientService;
 import com.oauth2.as.service.PRService;
 import com.oauth2.as.service.UserService;
 import com.oauth2.as.util.CryptoUtils;
+
 import org.apache.velocity.app.VelocityEngine;
 import org.h2.jdbcx.JdbcConnectionPool;
 import org.json.JSONObject;
+
 import spark.ModelAndView;
 import spark.QueryParamsMap;
 import spark.template.velocity.VelocityTemplateEngine;
@@ -32,33 +34,24 @@ public class App {
     public static void main(String[] args) throws SQLException, IOException {
 
         staticFileLocation("/public");
-
         var templateEngine = initTemplateEngine("src/main/resources/public");
 
         var jdbcConnectionPool = JdbcConnectionPool.create("jdbc:h2:~/test", "sa", "sa");
-
         var connection = jdbcConnectionPool.getConnection();
-
         initDatabase(connection, "src/main/resources/init.sql");
+
+        var userService = new UserService(connection);
+        var clientService = new ClientService();
+        var prService = new PRService();
+
+        var corsFilter = new CorsFilter(Set.of("*"));
+        var userAuthenticationFilter = new UserAuthenticationFilter(userService);
+        var clientAuthenticationFilter = new ClientAuthenticationFilter(clientService);
+        var prAuthenticationFilter = new PRAuthenticationFilter(prService);
 
         var cryptoUtils = new CryptoUtils();
 
-        var corsFilter = new CorsFilter(Set.of("*"));
-
-        var userService = new UserService(connection);
-
-        var userAuthenticationFilter = new UserAuthenticationFilter(userService);
-
-        var clientService = new ClientService();
-
-        var clientAuthenticationFilter = new ClientAuthenticationFilter(clientService);
-
-        var prService = new PRService();
-
-        var prAuthenticationFilter = new PRAuthenticationFilter(prService);
-
         before(corsFilter);
-
                 /*
         /authorize endpoint
          */
@@ -98,7 +91,6 @@ public class App {
                 }
 
                 var actualClientId = Long.parseLong(request.queryParams("client_id"));
-
                 var realClientId = client.getId();
 
                 if (!realClientId.equals(actualClientId)) {
@@ -109,7 +101,6 @@ public class App {
                 }
 
                 var actualRedirectUri = request.queryParams("redirect_uri");
-
                 var realRedirectUri = client.getRedirectUri();
 
                 if (!realRedirectUri.equals(actualRedirectUri)) {
@@ -140,7 +131,6 @@ public class App {
             request.session().attribute("query_map", request.queryMap());
 
             var model = new HashMap<String, Object>();
-
             model.put("scope", request.queryMap().value("scope").split(" "));
             model.put("client", client.getName());
             return render(templateEngine, "authorize.html", model);
@@ -156,27 +146,18 @@ public class App {
             log("/approve endpoint hit");
 
             var session = request.session();
-
             var queryMap = (QueryParamsMap) session.attribute("query_map");
-
-
             var code = cryptoUtils.generateRandomString(15);
+            var hashedCode = cryptoUtils.sha256(code);
+            var expiry = now().plus(10, SECONDS);
+            var user = (User) session.attribute("user");
+            var codeChallenge = queryMap.value("code_challenge");
+            var codeChallengeMethod = queryMap.value("code_challenge_method");
 
             log("code issued: " + code);
 
-            var hashedCode = cryptoUtils.sha256(code);
-
-            var expiry = now().plus(10, SECONDS);
-
-            var user = (User) session.attribute("user");
-
-            var codeChallenge = queryMap.value("code_challenge");
-
-            var codeChallengeMethod = queryMap.value("code_challenge_method");
-
             var preparedInsertStatement = connection.prepareStatement("INSERT INTO code (content, expiry, scope, user_id, code_challenge_method, code_challenge)" +
                     " VALUES (?, ?, ?, ?, ?, ?)");
-
             preparedInsertStatement.setString(1, hashedCode);
             preparedInsertStatement.setTimestamp(2, Timestamp.from(expiry));
             preparedInsertStatement.setString(3, queryMap.value("scope"));
@@ -192,9 +173,7 @@ public class App {
             var redirectUri = queryMap.value("redirect_uri") + "?code=" + code + "&state=" + state;
 
             var redirectUriResponse = new JSONObject();
-
             redirectUriResponse.put("redirect_uri", redirectUri);
-
             response.status(200);
 
             return redirectUriResponse.toString();
@@ -222,15 +201,12 @@ public class App {
             }
 
             var code = (String) requestBody.get("code");
-
             var hashedCode = cryptoUtils.sha256(code);
-
             var preparedStatement = connection.prepareStatement("SELECT * FROM code WHERE content = ?");
             preparedStatement.setString(1, hashedCode);
             var result = preparedStatement.executeQuery();
 
             var scope = "";
-
             var userId = -1L;
 
             if (result.next()) {
@@ -238,13 +214,9 @@ public class App {
                 log("code found");
 
                 var expiry = result.getTimestamp("expiry").toInstant();
-
                 var codeChallengeMethod = result.getString("code_challenge_method");
-
                 var realCodeChallenge = result.getString("code_challenge");
-
                 var actualCodeVerifier = (String) requestBody.get("code_verifier");
-
                 var actualCodeChallenge = codeChallengeMethod.equals("S256") ? cryptoUtils.sha256(actualCodeVerifier) : actualCodeVerifier;
 
                 if (!actualCodeChallenge.equals(realCodeChallenge)) {
@@ -255,13 +227,10 @@ public class App {
                 log("valid code_verifier");
 
                 scope = result.getString("scope");
-
                 userId = result.getLong("user_id");
 
                 var preparedDeleteStatement = connection.prepareStatement("DELETE FROM code WHERE content = ?");
-
                 preparedDeleteStatement.setString(1, hashedCode);
-
                 preparedDeleteStatement.execute();
 
                 if (now().isAfter(expiry)) {
@@ -273,29 +242,20 @@ public class App {
             }
 
             var accessToken = cryptoUtils.generateRandomString(50);
+            var expiry = now().plus(30, SECONDS);
+            var hashedToken = cryptoUtils.sha256(accessToken);
 
             log("accessToken issued: " + accessToken);
 
-            var expiry = now().plus(30, SECONDS);
-
-            var hashedToken = cryptoUtils.sha256(accessToken);
-
             var prepareInsertStatement = connection.prepareStatement("INSERT INTO token (content, expiry, scope, user_id) VALUES (?, ?, ?, ?)");
-
             prepareInsertStatement.setString(1, hashedToken);
-
             prepareInsertStatement.setTimestamp(2, Timestamp.from(expiry));
-
             prepareInsertStatement.setString(3, scope);
-
             prepareInsertStatement.setLong(4, userId);
-
             prepareInsertStatement.execute();
 
             var tokenResponse = new JSONObject();
-
             tokenResponse.put("token", accessToken);
-
             tokenResponse.put("expiry", expiry);
 
             return tokenResponse;
@@ -352,15 +312,39 @@ public class App {
             response.status(200);
             return introspectionResponse;
         });
+        //before("/revoke", clientAuthenticationFilter);
+        post("/revoke", (request, response) -> {
+            // TODO ask for client ID
+            var requestBody = new JSONObject(request.body());
+            if (!requestBody.has("token")) {
+                halt(401);
+            }
+
+            var hashedToken = cryptoUtils.sha256(requestBody.getString("token"));
+
+            var preparedStatement = connection.prepareStatement("SELECT * FROM token WHERE content = ?");
+            preparedStatement.setString(1, hashedToken);
+            var result = preparedStatement.executeQuery();
+
+            if (!result.next()) {
+                log("token not found");
+                halt(404);
+            }
+
+            var preparedDeleteStatement = connection.prepareStatement("DELETE FROM token WHERE content = ?");
+            preparedDeleteStatement.setString(1, hashedToken);
+            preparedDeleteStatement.execute();
+
+            log("token revoked");
+
+            return "";
+        });
     }
 
     private static VelocityTemplateEngine initTemplateEngine(String path) {
-        Properties properties = new Properties();
-
+        var properties = new Properties();
         properties.setProperty("file.resource.loader.path", path);
-
-        VelocityTemplateEngine templateEngine = new VelocityTemplateEngine(new VelocityEngine(properties));
-        return templateEngine;
+        return new VelocityTemplateEngine(new VelocityEngine(properties));
     }
 
     public static String render(VelocityTemplateEngine velocityTemplateEngine, String view, Map<String, Object> model) {
