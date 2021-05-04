@@ -16,7 +16,7 @@ public class UserAuthenticationFilter extends AuthenticationFilter {
     }
 
     @Override
-    public void handle(Request request, Response response) throws Exception {
+    public void handle(Request request, Response response) {
         var session = request.session();
 
         if (session.isNew()) {
@@ -25,7 +25,7 @@ public class UserAuthenticationFilter extends AuthenticationFilter {
             return;
         }
 
-        String[] splitCredentials = resolveCredentials(request);
+        var splitCredentials = resolveCredentials(request);
 
         if (splitCredentials.length != 2) {
             halt(401);
@@ -44,6 +44,12 @@ public class UserAuthenticationFilter extends AuthenticationFilter {
             return;
         }
 
+        log("user " + user.getUsername() + " authenticated");
+
         session.attribute("user", user);
+    }
+
+    private static void log(String log) {
+        System.out.println(log);
     }
 }

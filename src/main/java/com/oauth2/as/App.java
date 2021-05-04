@@ -57,7 +57,6 @@ public class App {
 
         var prAuthenticationFilter = new PRAuthenticationFilter(prService);
 
-
         before(corsFilter);
 
                 /*
@@ -66,6 +65,8 @@ public class App {
         get("/authorize", (request, response) -> {
 
             var client = clientService.getClient();
+
+            log(client.getName() + " hit /authorize");
 
             request.session();
 
@@ -78,8 +79,21 @@ public class App {
                 }
 
                 if (!queryMap.hasKey("state")) {
+                    log("state not present");
                     var model = new HashMap<String, Object>();
                     model.put("error", "state");
+                    return render(templateEngine, "error.html", model);
+                }
+
+                if (!(queryMap.hasKey("code_challenge") && queryMap.hasKey("code_challenge_method"))) {
+                    var model = new HashMap<String, Object>();
+                    if (!Set.of("S256", "Plain").contains(queryMap.value("code_challenge_method"))) {
+                        model.put("error", "code_challenge_method");
+                        log("unsupported code_challenge_method");
+                    } else {
+                        log("code_challenge not present");
+                        model.put("error", "code_challenge");
+                    }
                     return render(templateEngine, "error.html", model);
                 }
 
@@ -88,6 +102,7 @@ public class App {
                 var realClientId = client.getId();
 
                 if (!realClientId.equals(actualClientId)) {
+                    log("invalid clientId " + actualClientId + " != " + realClientId);
                     var model = new HashMap<String, Object>();
                     model.put("error", "client_id");
                     return render(templateEngine, "error.html", model);
@@ -98,6 +113,7 @@ public class App {
                 var realRedirectUri = client.getRedirectUri();
 
                 if (!realRedirectUri.equals(actualRedirectUri)) {
+                    log("invalid redirect_uri " + actualRedirectUri + " != " + realRedirectUri);
                     var model = new HashMap<String, Object>();
                     model.put("error", "redirect_uri");
                     return render(templateEngine, "error.html", model);
@@ -108,12 +124,14 @@ public class App {
                 var realScope = client.getScope().split(" ");
 
                 if (!Arrays.asList(realScope).containsAll(Arrays.asList(actualScope))) {
+                    log("invalid scope " + String.join(" ", actualScope) + " != " + String.join(" ", realScope));
                     var model = new HashMap<String, Object>();
                     model.put("error", "scope");
                     return render(templateEngine, "error.html", model);
                 }
 
             } catch (NumberFormatException e) {
+                log("invalid format");
                 var model = new HashMap<String, Object>();
                 model.put("error", "format");
                 return render(templateEngine, "error.html", model);
@@ -135,11 +153,16 @@ public class App {
         before("/approve", userAuthenticationFilter);
         post("/approve", (request, response) -> {
 
+            log("/approve endpoint hit");
+
             var session = request.session();
 
             var queryMap = (QueryParamsMap) session.attribute("query_map");
 
+
             var code = cryptoUtils.generateRandomString(15);
+
+            log("code issued: " + code);
 
             var hashedCode = cryptoUtils.sha256(code);
 
@@ -147,14 +170,24 @@ public class App {
 
             var user = (User) session.attribute("user");
 
-            var preparedInsertStatement = connection.prepareStatement("INSERT INTO code (content, expiry, scope, user_id) VALUES (?, ?, ?, ?)");
+            var codeChallenge = queryMap.value("code_challenge");
+
+            var codeChallengeMethod = queryMap.value("code_challenge_method");
+
+            var preparedInsertStatement = connection.prepareStatement("INSERT INTO code (content, expiry, scope, user_id, code_challenge_method, code_challenge)" +
+                    " VALUES (?, ?, ?, ?, ?, ?)");
+
             preparedInsertStatement.setString(1, hashedCode);
             preparedInsertStatement.setTimestamp(2, Timestamp.from(expiry));
             preparedInsertStatement.setString(3, queryMap.value("scope"));
             preparedInsertStatement.setLong(4, user.getId());
+            preparedInsertStatement.setString(5, codeChallengeMethod);
+            preparedInsertStatement.setString(6, codeChallenge);
             preparedInsertStatement.execute();
 
             var state = queryMap.value("state");
+
+            log("state present: " + state);
 
             var redirectUri = queryMap.value("redirect_uri") + "?code=" + code + "&state=" + state;
 
@@ -171,9 +204,22 @@ public class App {
         /token endpoint
          */
 
-        before("/token", clientAuthenticationFilter);
+        // before("/token", clientAuthenticationFilter);
         post("/token", (request, response) -> {
+
+            log("/token endpoint hit");
+
             var requestBody = new JSONObject(request.body());
+
+            if (!requestBody.has("code")) {
+                log("code not present");
+                halt(401);
+            }
+
+            if (!requestBody.has("code_verifier")) {
+                log("code_verifier not present");
+                halt(401);
+            }
 
             var code = (String) requestBody.get("code");
 
@@ -189,7 +235,24 @@ public class App {
 
             if (result.next()) {
 
+                log("code found");
+
                 var expiry = result.getTimestamp("expiry").toInstant();
+
+                var codeChallengeMethod = result.getString("code_challenge_method");
+
+                var realCodeChallenge = result.getString("code_challenge");
+
+                var actualCodeVerifier = (String) requestBody.get("code_verifier");
+
+                var actualCodeChallenge = codeChallengeMethod.equals("S256") ? cryptoUtils.sha256(actualCodeVerifier) : actualCodeVerifier;
+
+                if (!actualCodeChallenge.equals(realCodeChallenge)) {
+                    log("invalid code_verifier: " + realCodeChallenge + " != " + actualCodeChallenge);
+                    halt(401);
+                }
+
+                log("valid code_verifier");
 
                 scope = result.getString("scope");
 
@@ -205,10 +268,13 @@ public class App {
                     halt(401);
                 }
             } else {
+                log("code not found");
                 halt(401);
             }
 
             var accessToken = cryptoUtils.generateRandomString(50);
+
+            log("accessToken issued: " + accessToken);
 
             var expiry = now().plus(30, SECONDS);
 
@@ -237,10 +303,13 @@ public class App {
 
         //before("/introspect", prAuthenticationFilter);
         post("/introspect", (request, response) -> {
-            System.out.println("incomming req");
+
+            log("/introspect endpoint hit");
+
             var requestBody = new JSONObject(request.body());
 
             if (!requestBody.has("token")) {
+                log("body contains no token");
                 response.status(401);
                 return null;
             }
@@ -250,7 +319,7 @@ public class App {
             introspectionResponse.put("active", false);
 
             var actualToken = (String) requestBody.get("token");
-
+            log("token present: " + actualToken);
             var hashedToken = cryptoUtils.sha256(actualToken);
 
             var preparedStatement = connection.prepareStatement("SELECT * FROM token WHERE content = ?");
@@ -269,12 +338,16 @@ public class App {
                     var preparedDeleteStatement = connection.prepareStatement("DELETE FROM token WHERE content = ?");
                     preparedDeleteStatement.setString(1, hashedToken);
                     preparedDeleteStatement.execute();
+                    log("token expired");
                 } else {
                     introspectionResponse.put("expiry", expiry);
                     introspectionResponse.put("active", true);
                     introspectionResponse.put("sub", sub);
                     introspectionResponse.put("scope", scope);
+                    log("token valid");
                 }
+            } else {
+                log("token not present in db");
             }
             response.status(200);
             return introspectionResponse;
@@ -303,5 +376,9 @@ public class App {
             stringBuilder.append(reader.readLine());
         }
         connection.createStatement().execute(stringBuilder.toString());
+    }
+
+    private static void log(String log) {
+        System.out.println(log);
     }
 }

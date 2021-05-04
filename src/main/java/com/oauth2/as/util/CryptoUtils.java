@@ -19,7 +19,7 @@ public class CryptoUtils {
 
     public String sha256(String message) throws NoSuchAlgorithmException {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(message.getBytes());
-        return getEncoder().encodeToString(digest);
+        return getEncoder().withoutPadding().encodeToString(digest);
     }
 
 }

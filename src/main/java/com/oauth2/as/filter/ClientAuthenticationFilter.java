@@ -17,7 +17,7 @@ public class ClientAuthenticationFilter extends AuthenticationFilter {
     }
 
     @Override
-    public void handle(Request request, Response response) throws Exception {
+    public void handle(Request request, Response response) {
 
         var splitCredentials = resolveCredentials(request);
 
@@ -29,7 +29,6 @@ public class ClientAuthenticationFilter extends AuthenticationFilter {
 
         if (!client.getId().toString().equals(splitCredentials[0]) || !client.getSecret().equals(splitCredentials[1])) {
             halt(401);
-            return;
         }
     }
 }

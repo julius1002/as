@@ -5,23 +5,16 @@
     display: flex;
 }
 
-.login-form {
-    width: 20em
-}
+.login-form { width: 20em }
 
 .container > input {
     display: block;
     margin: 0 auto;
 }
 
+input { margin-top: 1em; }
 
-input {
-    margin-top: 1em;
-}
-
-.main {
-    text-align: center;
-}
+.main { text-align: center; }
 
 #approve-btn {
     padding: 0 0.5em;
@@ -29,8 +22,6 @@ input {
     margin: 1em auto;
 }
 
-.unauthorized {
-    border:red 2px solid
-}
+.unauthorized { border:red 2px solid }
 
-button:focus {outline:0;}
+button:focus { outline:0; }

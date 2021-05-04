@@ -14,10 +14,11 @@ public class AuthenticationFilter implements Filter {
 
         var authorization = request.headers("Authorization");
 
-        if(authorization == null){
+        if (authorization == null) {
             halt(401);
         }
-        String[] splitAuthorization = authorization.split(" ");
+
+        var splitAuthorization = authorization.split(" ");
 
         if (!splitAuthorization[0].equals("Basic") && splitAuthorization.length != 2) {
             halt(401);
@@ -32,4 +33,5 @@ public class AuthenticationFilter implements Filter {
     public void handle(Request request, Response response) throws Exception {
 
     }
+
 }
