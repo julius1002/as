@@ -2,6 +2,7 @@ package com.oauth2.as;
 
 import com.oauth2.as.entities.User;
 import com.oauth2.as.filter.ClientAuthenticationFilter;
+import com.oauth2.as.filter.CorsFilter;
 import com.oauth2.as.filter.PRAuthenticationFilter;
 import com.oauth2.as.filter.UserAuthenticationFilter;
 import com.oauth2.as.service.ClientService;
@@ -20,10 +21,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.sql.Timestamp;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 
 import static java.time.Instant.now;
 import static java.time.temporal.ChronoUnit.SECONDS;
@@ -45,6 +43,8 @@ public class App {
 
         var cryptoUtils = new CryptoUtils();
 
+        var corsFilter = new CorsFilter(Set.of("*"));
+
         var userService = new UserService(connection);
 
         var userAuthenticationFilter = new UserAuthenticationFilter(userService);
@@ -56,10 +56,13 @@ public class App {
         var prService = new PRService();
 
         var prAuthenticationFilter = new PRAuthenticationFilter(prService);
+
+
+        before(corsFilter);
+
                 /*
         /authorize endpoint
          */
-
         get("/authorize", (request, response) -> {
 
             var client = clientService.getClient();
@@ -234,6 +237,7 @@ public class App {
 
         //before("/introspect", prAuthenticationFilter);
         post("/introspect", (request, response) -> {
+            System.out.println("incomming req");
             var requestBody = new JSONObject(request.body());
 
             if (!requestBody.has("token")) {
