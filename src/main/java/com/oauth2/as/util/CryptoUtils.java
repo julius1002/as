@@ -21,6 +21,5 @@ public class CryptoUtils {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(message.getBytes());
         return getEncoder().withoutPadding().encodeToString(digest);
     }
-
 }
 

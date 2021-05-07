@@ -6,16 +6,16 @@ import spark.Response;
 
 import static spark.Spark.halt;
 
-public class PRAuthenticationFilter extends AuthenticationFilter {
+public class PRAuthorizationFilter extends BasicAuthorizationFilter {
 
     private PRService prService;
 
-    public PRAuthenticationFilter(PRService prService) {
+    public PRAuthorizationFilter(PRService prService) {
         this.prService = prService;
     }
 
     @Override
-    public void handle(Request request, Response response) throws Exception {
+    public void handle(Request request, Response response) {
 
         var splitCredentials = resolveCredentials(request);
 

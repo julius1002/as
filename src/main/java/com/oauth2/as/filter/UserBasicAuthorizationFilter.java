@@ -7,11 +7,11 @@ import spark.Response;
 
 import static spark.Spark.halt;
 
-public class UserAuthenticationFilter extends AuthenticationFilter {
+public class UserBasicAuthorizationFilter extends BasicAuthorizationFilter {
 
     private UserService userService;
 
-    public UserAuthenticationFilter(UserService userService) {
+    public UserBasicAuthorizationFilter(UserService userService) {
         this.userService = userService;
     }
 
