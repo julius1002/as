@@ -417,7 +417,10 @@ public class App {
             var response_type = "code";
             var tokenEndpointAuthMethod = "secret_basic";
             var scope = (String) requestBody.get("scope");
-            var preparedStatement = connection.prepareStatement("INSERT INTO client (secret, name, uri, redirect_uri, grant_type, response_type, tokenEndpointAuthMethod, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Statement.RETURN_GENERATED_KEYS);
+            var preparedStatement = connection.prepareStatement(
+                    "INSERT INTO client (secret, name, uri, redirect_uri, grant_type, response_type, tokenEndpointAuthMethod, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    Statement.RETURN_GENERATED_KEYS);
+
             preparedStatement.setString(1, secret);
             preparedStatement.setString(2, name);
             preparedStatement.setString(3, uri);
