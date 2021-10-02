@@ -1,5 +1,11 @@
 package com.oauth2.as;
 
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.ECDSASigner;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import com.oauth2.as.entities.Client;
 import com.oauth2.as.entities.User;
 import com.oauth2.as.filter.ClientAuthorizationFilter;
@@ -13,6 +19,7 @@ import com.oauth2.as.util.CryptoUtils;
 
 import org.apache.velocity.app.VelocityEngine;
 import org.h2.jdbcx.JdbcConnectionPool;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import spark.ModelAndView;
@@ -20,13 +27,12 @@ import spark.QueryParamsMap;
 import spark.template.velocity.VelocityTemplateEngine;
 
 import java.io.BufferedReader;
+import java.io.FileInputStream;
 import java.io.FileReader;
 import java.io.IOException;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.sql.Timestamp;
-import java.time.Instant;
+import java.security.KeyStore;
+import java.security.interfaces.ECPrivateKey;
+import java.sql.*;
 import java.util.*;
 
 import static java.time.Instant.now;
@@ -35,35 +41,68 @@ import static spark.Spark.*;
 
 public class App {
 
-    public static void main(String[] args) throws SQLException, IOException {
+    public static void main(String[] args) throws Exception {
+
 
         staticFileLocation("/public");
         var templateEngine = initTemplateEngine();
 
-        var jdbcConnectionPool = JdbcConnectionPool.create("jdbc:h2:~/test", "sa", "sa");
+        var jdbcConnectionPool = JdbcConnectionPool.create("jdbc:h2:~/test", "sa", "");
         var connection = jdbcConnectionPool.getConnection();
         initDatabase(connection);
+
+        //services
 
         var userService = new UserService(connection);
         var clientService = new ClientService(connection);
         var prService = new PRService();
+
+        //filters
 
         var corsFilter = new CorsFilter(Set.of("*"));
         var userAuthenticationFilter = new UserBasicAuthorizationFilter(userService);
         var clientAuthenticationFilter = new ClientAuthorizationFilter(clientService);
         var prAuthenticationFilter = new PRAuthorizationFilter(prService);
 
+        //asymmetric ec
+        var password = "changeit".toCharArray();
+        var keyStore = KeyStore.getInstance("PKCS12");
+        keyStore.load(new FileInputStream("keystore.p12"), password);
+        var privateKey = (ECPrivateKey) keyStore.getKey("es256-key", password);
+        var jwkSet = JWKSet.load(keyStore, alias -> password).toPublicJWKSet();
         var cryptoUtils = new CryptoUtils();
 
         before(corsFilter);
 
-                /*
-        /authorize endpoint
-         */
+        var self = "http://localhost:" + port();
+
+        //metadata endpoint
+
+        get("/.well-known/openid-configuration", (request, response) ->
+                new JSONObject()
+                        .put("issuer", self)
+                        .put("authorization_endpoint", self + "/authorize")
+                        .put("token_endpoint", self + "/token")
+                        .put("token_endpoint_auth_methods_supported", new JSONArray(Arrays.asList("client_secret_basic")))
+                        .put("token_endpoint_auth_signing_alg_values_supported", new JSONArray())
+                        .put("scopes_supported", new JSONArray(Arrays.asList("read", "write", "openid", "profile", "email", "phone")))
+                        .put("response_types_supported", new JSONArray(Arrays.asList("code", "code id_token")))
+                        .put("introspection_endpoint_auth_methods_supported", new JSONArray(Arrays.asList("client_secret_basic")))
+                        .put("introspection_endpoint", self + "/introspect")
+                        .put("revocation_endpoint", self + "/revoke")
+                        .put("grant_types_supported", new JSONArray(Arrays.asList("authorization_code", "refresh_token", "client_credentials")))
+                        .put("userinfo_endpoint", self + "/userinfo")
+                        .put("jwks_uri", self + "/jwks")
+                        .put("subject_types_supported", new JSONArray(Arrays.asList("public")))
+                        .put("id_token_signing_alg_values_supported", new JSONArray(Arrays.asList("EC256")))
+                        .put("registration_endpoint", self + "/register")
+                        .toString()
+        );
+
+        //authorize endpoint
+
         get("/authorize", (request, response) -> {
-
             request.session();
-
             try {
                 var queryMap = request.queryMap();
 
@@ -71,7 +110,6 @@ public class App {
                     response.redirect("authorize.html");
                     return null;
                 }
-
                 if (!queryMap.hasKey("client_id")) {
                     log("client_id not present");
                     var model = new HashMap<String, Object>();
@@ -80,14 +118,12 @@ public class App {
                 }
 
                 var optionalClient = clientService.findById(Long.parseLong(queryMap.value("client_id")));
-
                 if (optionalClient.isEmpty()) {
                     log("client not found");
                     halt(401);
                 }
 
                 var client = optionalClient.get();
-
                 log(client.getName() + " hit /authorize");
 
                 if (!queryMap.hasKey("state")) {
@@ -97,10 +133,18 @@ public class App {
                     return render(templateEngine, "error.html", model);
                 }
 
-                if (!queryMap.hasKey("response_type") || !queryMap.value("response_type").equals("code")) {
+                if (!queryMap.hasKey("response_type")) {
+                    log("response_type missing");
+                    var model = new HashMap<String, Object>();
+                    model.put("error", "response_type missing");
+                    return render(templateEngine, "error.html", model);
+                }
+
+                var responseType = queryMap.value("response_type");
+                if (!(responseType.contains("id_token") || responseType.contains("code"))) {
                     log("response_type invalid");
                     var model = new HashMap<String, Object>();
-                    model.put("error", "response_type");
+                    model.put("error", "response_type invalid");
                     return render(templateEngine, "error.html", model);
                 }
 
@@ -161,9 +205,7 @@ public class App {
             }
         });
 
-        /*
-        /approve endpoint
-         */
+        //approve endpoint
 
         before("/approve", userAuthenticationFilter);
         post("/approve", (request, response) -> {
@@ -179,13 +221,18 @@ public class App {
             var codeChallenge = queryMap.value("code_challenge");
             var codeChallengeMethod = queryMap.value("code_challenge_method");
             var clientId = queryMap.value("client_id");
+            var responseType = queryMap.value("response_type");
+            var nonce = queryMap.value("nonce");
+            log("nonce: " + nonce);
 
+            log("response_type: " + responseType);
             log("code issued: " + code);
             log("for client: " + clientId);
 
             var preparedInsertStatement = connection.prepareStatement(
-                    "INSERT INTO code (content, expiry, scope, user_id, code_challenge_method, code_challenge, client_id)" +
-                            " VALUES (?, ?, ?, ?, ?, ?, ?)");
+                    "INSERT INTO code (content, expiry, scope, user_id, code_challenge_method, code_challenge, client_id, response_type, nonce)" +
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
             preparedInsertStatement.setString(1, hashedCode);
             preparedInsertStatement.setTimestamp(2, Timestamp.from(expiry));
             preparedInsertStatement.setString(3, queryMap.value("scope"));
@@ -193,6 +240,8 @@ public class App {
             preparedInsertStatement.setString(5, codeChallengeMethod);
             preparedInsertStatement.setString(6, codeChallenge);
             preparedInsertStatement.setString(7, clientId);
+            preparedInsertStatement.setString(8, responseType);
+            preparedInsertStatement.setString(9, nonce);
             preparedInsertStatement.execute();
 
             var state = queryMap.value("state");
@@ -208,9 +257,7 @@ public class App {
             return redirectUriResponse.toString();
         });
 
-        /*
-        /token endpoint
-         */
+        //token endpoint
 
         before("/token", clientAuthenticationFilter);
         post("/token", (request, response) -> {
@@ -250,7 +297,9 @@ public class App {
 
             var scope = "";
             var userId = -1L;
+            String nonce = null;
 
+            var responseType = "";
             if (result.next()) {
 
                 log("code found");
@@ -261,6 +310,9 @@ public class App {
                 var realCodeChallenge = result.getString("code_challenge");
                 var actualCodeVerifier = (String) requestBody.get("code_verifier");
                 var actualCodeChallenge = codeChallengeMethod.equals("S256") ? cryptoUtils.sha256(actualCodeVerifier) : actualCodeVerifier;
+                nonce = result.getString("nonce");
+                log("nonce from code: " + nonce);
+                responseType = result.getString("response_type");
 
                 if (realClientId != actualClientId) {
                     log("invalid client_id " + realClientId + " != " + actualClientId);
@@ -305,65 +357,145 @@ public class App {
             prepareInsertStatement.execute();
 
             var tokenResponse = new JSONObject();
-            tokenResponse.put("token", accessToken);
+            tokenResponse.put("access_token", accessToken);
             tokenResponse.put("expiry", expiry);
 
+            if (responseType.contains("id_token")) {
+                log("generating id token");
+                var selectUserStatement = connection.prepareStatement("SELECT * FROM user WHERE id = ?");
+                selectUserStatement.setLong(1, userId);
+
+                log("searching user with id: " + userId);
+                var resultSet = selectUserStatement.executeQuery();
+
+                if (resultSet.next()) {
+                    var jwtClaimSet = new JWTClaimsSet.Builder()
+                            .issuer(self)
+                            .audience(client.getId().toString())
+                            .subject(String.valueOf(userId));
+
+                    if (scope.contains("profile")) {
+                        jwtClaimSet.claim("firstname", resultSet.getString("firstname"));
+                        jwtClaimSet.claim("lastname", resultSet.getString("lastname"));
+                        jwtClaimSet.claim("gender", resultSet.getString("gender"));
+                    }
+                    if (scope.contains("email")) {
+                        jwtClaimSet.claim("email", resultSet.getString("email"));
+                    }
+                    if (scope.contains("phone")) {
+                        jwtClaimSet.claim("phone", resultSet.getString("phone"));
+                    }
+
+                    if (nonce != null) {
+                        jwtClaimSet.claim("nonce", nonce);
+                    }
+
+                    var jwtHeader = new JWSHeader.Builder(JWSAlgorithm.ES256)
+                            .keyID("es256-key")
+                            .build();
+
+                    var jwt = new SignedJWT(jwtHeader, jwtClaimSet.build());
+                    jwt.sign(new ECDSASigner(privateKey));
+
+                    tokenResponse.put("id_token", jwt.serialize());
+                    response.status(200);
+                    return tokenResponse.toString();
+                } else {
+                    log("user not present in db");
+                    halt(401);
+                }
+            }
             return tokenResponse;
         });
 
-        before("/introspect", prAuthenticationFilter);
-        post("/introspect", (request, response) -> {
+        //jwk public key
 
-            log("/introspect endpoint hit");
-
-            var requestBody = new JSONObject(request.body());
-
-            if (!requestBody.has("token")) {
-                log("body contains no token");
-                response.status(400);
-                return null;
-            }
-
-            var introspectionResponse = new JSONObject();
-
-            introspectionResponse.put("active", false);
-
-            var actualToken = (String) requestBody.get("token");
-            log("token present: " + actualToken);
-            var hashedToken = cryptoUtils.sha256(actualToken);
-
-            var preparedStatement = connection.prepareStatement(
-                    "SELECT * FROM token WHERE content = ?");
-            preparedStatement.setString(1, hashedToken);
-            var result = preparedStatement.executeQuery();
-
-            if (result.next()) {
-
-                var expiry = result.getTimestamp("expiry").toInstant();
-
-                var scope = result.getString("scope");
-
-                var sub = result.getLong("user_id");
-
-                if (now().isAfter(expiry)) {
-                    var preparedDeleteStatement = connection.prepareStatement(
-                            "DELETE FROM token WHERE content = ?");
-                    preparedDeleteStatement.setString(1, hashedToken);
-                    preparedDeleteStatement.execute();
-                    log("token expired");
-                } else {
-                    introspectionResponse.put("expiry", expiry);
-                    introspectionResponse.put("active", true);
-                    introspectionResponse.put("sub", sub);
-                    introspectionResponse.put("scope", scope);
-                    log("token valid");
-                }
-            } else {
-                log("token not present in db");
-            }
-            response.status(200);
-            return introspectionResponse;
+        get("/jwks", (request, response) -> {
+            response.type("application/jwt-set+json");
+            return jwkSet.toString();
         });
+
+        //userinfo endpoint
+
+        get("/userinfo", (request, response) -> {
+                    log("/userinfo endpoint hit");
+                    var authorizationHeader = request.headers("Authorization");
+
+                    if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer")) {
+                        log("header: ' " + authorizationHeader + " ' not present or invalid");
+                        halt(401);
+                    }
+
+                    var splittedHeaderValue = authorizationHeader.split(" ");
+
+                    if (splittedHeaderValue.length != 2) {
+                        halt(401);
+                    }
+
+                    var token = splittedHeaderValue[1];
+
+                    log("token present: " + token);
+
+                    var hashedToken = cryptoUtils.sha256(token);
+
+                    var preparedStatement = connection.prepareStatement(
+                            "SELECT * FROM token WHERE content = ?");
+                    preparedStatement.setString(1, hashedToken);
+                    var result = preparedStatement.executeQuery();
+
+                    if (result.next()) {
+                        var expiry = result.getTimestamp("expiry").toInstant();
+                        var scope = result.getString("scope");
+                        var sub = result.getLong("user_id");
+                        if (now().isAfter(expiry)) {
+                            var preparedDeleteStatement = connection.prepareStatement("DELETE FROM token WHERE content = ?");
+                            preparedDeleteStatement.setString(1, hashedToken);
+                            preparedDeleteStatement.execute();
+                            log("token expired");
+                            halt(401);
+                        } else {
+                            if (!scope.contains("openid")) {
+                                halt(403);
+                            }
+
+                            var selectUserStatement = connection.prepareStatement("SELECT * FROM user WHERE id = ?");
+
+                            selectUserStatement.setLong(1, sub);
+                            log("searching user with id: " + sub);
+
+                            var resultSet = selectUserStatement.executeQuery();
+
+                            if (resultSet.next()) {
+                                var userInfoResponse = new JSONObject().put("sub", resultSet.getLong("id"));
+
+                                if (scope.contains("profile")) {
+                                    userInfoResponse.put("firstname", resultSet.getString("firstname"));
+                                    userInfoResponse.put("lastname", resultSet.getString("lastname"));
+                                    userInfoResponse.put("gender", resultSet.getString("gender"));
+                                }
+                                if (scope.contains("email")) {
+                                    userInfoResponse.put("email", resultSet.getString("email"));
+                                }
+                                if (scope.contains("phone")) {
+                                    userInfoResponse.put("phone", resultSet.getString("phone"));
+                                }
+                                response.status(200);
+                                return userInfoResponse.toString();
+                            } else {
+                                log("user not present in db");
+                                halt(401);
+                            }
+                            log("token valid");
+                        }
+                    } else {
+                        log("token not present in db");
+                    }
+                    halt(401);
+                    return null;
+                }
+        );
+
+        //revocation endpoint
 
         before("/revoke", clientAuthenticationFilter);
         post("/revoke", (request, response) -> {

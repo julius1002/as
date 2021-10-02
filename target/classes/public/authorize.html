@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<link rel="stylesheet" href="styles.css">
+<script src="authorize.js"></script>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+</head>
+
+<body>
+<div class="main">
+    <div class="container">
+        <div class="login-form">
+            <h2>Authorization Server Login</h2>
+            <input placeholder="username" id="username">
+            <input placeholder="password" id="password">
+            <button id="approve-btn">approve</button>
+        </div>
+        <div>
+            $client requests the following scope:
+            <ul>
+                #foreach( $item in $scope )
+                <li>$item</li>
+                #end
+            </ul>
+        </div>
+    </div>
+</div>
+</body>
+
+</html>

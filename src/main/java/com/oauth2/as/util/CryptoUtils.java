@@ -1,11 +1,21 @@
 package com.oauth2.as.util;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
+import com.nimbusds.jose.jwk.JWKSet;
+
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.security.*;
+import java.security.cert.CertificateException;
+import java.security.interfaces.ECPrivateKey;
 import java.util.Base64;
 
 public class CryptoUtils {
+
+
+    public CryptoUtils() {
+
+    }
 
     private Base64.Encoder getEncoder() {
         return Base64.getUrlEncoder();
