@@ -1,4 +1,4 @@
-OAuth 2 Authorization Server written in Spark
+Open ID Connect Identity Provider written in Spark
 
 PKCE https://tools.ietf.org/html/rfc7636
 
